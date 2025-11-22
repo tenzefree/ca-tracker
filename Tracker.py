@@ -3,260 +3,349 @@ import pandas as pd
 import plotly.express as px
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="CA Titan (Light)", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="CA Titan Platinum", page_icon="🛡️", layout="wide")
 DB_FILE = "CA_Titan_DB.xlsx"
+EXAM_DATE = date(2026, 5, 1)
 
-# --- LIGHT MODE STYLING ---
+# --- LIGHT MODE MILITARY STYLING ---
 st.markdown("""
     <style>
-    /* White Background */
-    .stApp {background-color: #FFFFFF; color: #000000;}
+    .stApp {background-color: #FFFFFF; color: #111;}
     
-    /* Cards */
-    .metric-card {
-        background-color: #F8F9FA; 
-        border: 1px solid #E0E0E0; 
-        padding: 15px; 
-        border-radius: 10px; 
-        text-align: center;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    /* Dashboard Cards */
+    .metric-box {
+        background-color: #F8F9FA;
+        border-left: 5px solid #2C5282;
+        padding: 15px;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        border-radius: 5px;
     }
     
-    /* Strict Alert Box */
-    .alert-box {
-        background-color: #FFF5F5; 
-        border: 1px solid #FC8181; 
-        padding: 10px; 
-        border-radius: 5px; 
+    /* Strict Alert - Red Box */
+    .strict-alert {
+        background-color: #FFF5F5;
+        border: 2px solid #C53030;
         color: #C53030;
+        padding: 15px;
+        border-radius: 8px;
         font-weight: bold;
-    }
-    
-    /* Timer Box */
-    .timer-box {
         text-align: center;
-        padding: 40px;
-        background: #F0FFF4;
-        border: 2px solid #48BB78;
-        border-radius: 15px;
+        margin-bottom: 20px;
     }
     
-    h1, h2, h3 {color: #1A202C !important;}
+    /* Revision Alert - Yellow Box */
+    .rev-alert {
+        background-color: #FFFFF0;
+        border: 2px solid #D69E2E;
+        color: #744210;
+        padding: 10px;
+        border-radius: 5px;
+    }
+    
+    /* Timer */
+    .timer-display {
+        font-size: 80px; 
+        font-weight: bold; 
+        color: #2F855A;
+        text-align: center;
+        background: #F0FFF4;
+        border: 1px solid #9AE6B4;
+        border-radius: 20px;
+        padding: 20px;
+    }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 1. EXCEL DATABASE ENGINE ---
+# --- 1. DATABASE ENGINE (SINGLE EXCEL) ---
 def init_db():
-    """Creates the Master Excel file if it doesn't exist."""
     if not os.path.exists(DB_FILE):
-        # Sheet 1: Master Syllabus
+        # DETAILED MASTER SHEET
         df_master = pd.DataFrame(columns=[
             'Subject', 'Chapter', 'Topic', 'Est_Hours', 
-            'Status', 'Confidence', # Status: Pending, Class Done, Revision... Confidence: High, Med, Low
-            'Rev_Count', 'RTP_Done', 'MTP_Done'
+            'Status', 'Confidence', # Pending, Class Done, Rev 1...
+            'Rev_Count', 'Last_Studied', 'RTP_Done', 'MTP_Done'
         ])
-        # Sheet 2: Activity Logs
+        # LOGS SHEET
         df_logs = pd.DataFrame(columns=[
             'Date', 'Start_Time', 'End_Time', 'Category', 
             'Subject', 'Topic', 'Duration_Mins', 'Focus', 'Note'
         ])
         
-        try:
-            with pd.ExcelWriter(DB_FILE, engine='xlsxwriter') as writer:
-                df_master.to_excel(writer, sheet_name='Master', index=False)
-                df_logs.to_excel(writer, sheet_name='Logs', index=False)
-        except Exception as e:
-            st.error(f"Error creating DB: {e}")
-
-def load_db():
-    """Reads both sheets."""
-    try:
-        if not os.path.exists(DB_FILE):
-            init_db()
-            
-        # Read Excel
-        xls = pd.ExcelFile(DB_FILE)
-        df_master = pd.read_excel(xls, 'Master')
-        df_logs = pd.read_excel(xls, 'Logs')
-        
-        # Ensure Columns Exist (Fixes bugs if Excel was edited manually)
-        if 'Duration_Mins' not in df_logs.columns: df_logs['Duration_Mins'] = 0.0
-        
-        return df_master, df_logs
-    except Exception as e:
-        st.error(f"Error loading Database: {e}")
-        return pd.DataFrame(), pd.DataFrame()
-
-def save_db(df_master, df_logs):
-    """Writes back to Excel safely."""
-    try:
-        with pd.ExcelWriter(DB_FILE, engine='openpyxl', mode='w') as writer:
+        with pd.ExcelWriter(DB_FILE, engine='xlsxwriter') as writer:
             df_master.to_excel(writer, sheet_name='Master', index=False)
             df_logs.to_excel(writer, sheet_name='Logs', index=False)
+
+def load_db():
+    try:
+        if not os.path.exists(DB_FILE): init_db()
+        xls = pd.ExcelFile(DB_FILE)
+        master = pd.read_excel(xls, 'Master')
+        logs = pd.read_excel(xls, 'Logs')
+        return master, logs
+    except Exception as e:
+        st.error(f"Database Error: {e}")
+        return pd.DataFrame(), pd.DataFrame()
+
+def save_db(master, logs):
+    try:
+        with pd.ExcelWriter(DB_FILE, engine='openpyxl', mode='w') as writer:
+            master.to_excel(writer, sheet_name='Master', index=False)
+            logs.to_excel(writer, sheet_name='Logs', index=False)
         return True
     except PermissionError:
-        st.error("🚨 CRITICAL: You have the Excel file open! Close 'CA_Titan_DB.xlsx' and click Save again.")
-        return False
-    except Exception as e:
-        st.error(f"Save failed: {e}")
+        st.error("🚨 CRITICAL: Close 'CA_Titan_DB.xlsx' immediately! File is locked.")
         return False
 
-# --- 2. LOGIC HANDLERS ---
+# --- 2. INTELLIGENCE ENGINES ---
 
-def perform_gap_check(logs_df, current_start_time):
-    """Checks if there is a gap between last log and now."""
-    if logs_df.empty: return logs_df, 0
+def check_strict_gaps(logs):
+    """Checks if user wasted time between tasks."""
+    if logs.empty: return logs, 0
     
-    # Ensure Date formats
-    logs_df['End_Time'] = pd.to_datetime(logs_df['End_Time'])
+    logs['End_Time'] = pd.to_datetime(logs['End_Time'])
+    today = datetime.now().strftime("%Y-%m-%d")
+    today_logs = logs[logs['Date'] == today].sort_values('End_Time')
     
-    # Filter for Today Only
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    today_logs = logs_df[logs_df['Date'] == today_str].copy()
+    if today_logs.empty: return logs, 0
     
-    if today_logs.empty: return logs_df, 0
-    
-    # Get last end time
     last_end = today_logs.iloc[-1]['End_Time']
+    now = datetime.now()
+    gap_mins = (now - last_end).total_seconds() / 60
     
-    # Calculate Gap
-    gap_mins = (current_start_time - last_end).total_seconds() / 60
-    
-    if gap_mins > 15: # Tolerance 15 mins
+    # STRICT RULE: 10 Mins Tolerance
+    if gap_mins > 10:
         new_row = {
-            'Date': today_str,
-            'Start_Time': last_end,
-            'End_Time': current_start_time,
-            'Category': 'WASTED',
-            'Subject': '-', 'Topic': 'UNACCOUNTED GAP',
-            'Duration_Mins': round(gap_mins, 2),
-            'Focus': 0, 'Note': 'Auto-detected Strict Mode'
+            'Date': today, 'Start_Time': last_end, 'End_Time': now,
+            'Category': 'WASTED', 'Subject': '-', 'Topic': 'UNACCOUNTED GAP',
+            'Duration_Mins': round(gap_mins, 2), 'Focus': 0, 'Note': 'Strict Mode Auto-Detect'
         }
-        # Add to dataframe
-        new_df = pd.DataFrame([new_row])
-        logs_df = pd.concat([logs_df, new_df], ignore_index=True)
-        return logs_df, gap_mins
+        logs = pd.concat([logs, pd.DataFrame([new_row])], ignore_index=True)
+        return logs, gap_mins
+    return logs, 0
+
+def calculate_velocity(master, logs):
+    """Predicts finish date based on speed."""
+    if master.empty: return "No Data"
+    
+    total_topics = len(master)
+    done_topics = len(master[master['Status'].isin(['Mastered', 'Rev 3', 'Rev 2', 'Rev 1', 'Class Done'])])
+    
+    if done_topics == 0: return "Calculating..."
+    
+    # Assume start date was first log
+    if logs.empty: return "No Logs"
+    first_log = pd.to_datetime(logs['Date']).min()
+    days_passed = (datetime.now() - first_log).days + 1
+    
+    avg_speed = done_topics / days_passed # topics per day
+    remaining = total_topics - done_topics
+    days_needed = remaining / avg_speed if avg_speed > 0 else 999
+    
+    finish_date = datetime.now() + timedelta(days=days_needed)
+    return finish_date.strftime("%d %b %Y")
+
+def get_revision_dues(master):
+    """Finds topics due for revision based on 1-3-7 rule."""
+    if master.empty: return []
+    
+    master['Last_Studied'] = pd.to_datetime(master['Last_Studied'], errors='coerce')
+    today = datetime.now()
+    dues = []
+    
+    for idx, row in master.iterrows():
+        if pd.isna(row['Last_Studied']): continue
         
-    return logs_df, 0
+        days_gap = (today - row['Last_Studied']).days
+        rev_count = row['Rev_Count']
+        
+        # Logic: Rev 0->1 (1 day), Rev 1->2 (3 days), Rev 2->3 (7 days)
+        if rev_count == 0 and days_gap >= 1: dues.append(row['Topic'])
+        elif rev_count == 1 and days_gap >= 3: dues.append(row['Topic'])
+        elif rev_count == 2 and days_gap >= 7: dues.append(row['Topic'])
+        elif rev_count >= 3 and days_gap >= 15: dues.append(row['Topic'])
+        
+    return dues
 
 # --- MAIN APP ---
 init_db()
 master_df, logs_df = load_db()
 
-# Sidebar
+# SIDEBAR
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/2913/2913520.png", width=50)
-    st.title("Titan OS")
-    st.caption("Excel-Core Edition")
-    if st.button("🔄 Refresh DB"):
-        st.rerun()
+    st.title("🛡️ TITAN OS")
+    days = (EXAM_DATE - date.today()).days
+    st.success(f"📅 **{days} Days** to May 2026")
+    
+    if st.button("🔄 Refresh DB"): st.rerun()
 
-# Tabs
-tab_track, tab_dash, tab_db = st.tabs(["⏱️ Tracker", "📊 Dashboard", "🗃️ Database"])
+# TABS
+tab_cmd, tab_track, tab_db, tab_audit = st.tabs(["📊 Command Center", "⏱️ Tracker", "🗃️ Master Excel", "🕵️ 24H Audit"])
 
 # ==========================
-# TAB 1: TRACKER
+# TAB 1: COMMAND CENTER (POWER BI STYLE)
+# ==========================
+with tab_cmd:
+    # 1. STRICT ALERTS
+    if not logs_df.empty:
+        today = datetime.now().strftime("%Y-%m-%d")
+        t_df = logs_df[logs_df['Date'] == today]
+        waste = t_df[t_df['Category'] == 'WASTED']['Duration_Mins'].sum()
+        study = t_df[t_df['Category'].str.contains('Study|Class')]['Duration_Mins'].sum()
+        
+        if waste > study:
+            st.markdown(f"<div class='strict-alert'>🚨 DISCIPLINE ALERT: Wasted Time ({int(waste)}m) > Study Time ({int(study)}m). UNACCEPTABLE.</div>", unsafe_allow_html=True)
+
+    # 2. REVISION RADAR
+    dues = get_revision_dues(master_df)
+    if dues:
+        st.markdown(f"<div class='rev-alert'>⚡ <b>{len(dues)} Topics Due for Revision:</b> {', '.join(dues[:5])}...</div>", unsafe_allow_html=True)
+
+    st.write("") # Spacer
+
+    # 3. VELOCITY & METRICS
+    col1, col2, col3, col4 = st.columns(4)
+    
+    finish_date = calculate_velocity(master_df, logs_df)
+    col1.metric("Projected Finish Date", finish_date, delta="Based on current speed")
+    
+    if not master_df.empty:
+        coverage = len(master_df[master_df['Status']!='Pending']) / len(master_df) * 100
+        col2.metric("Syllabus Coverage", f"{coverage:.1f}%")
+        
+        high_conf = len(master_df[master_df['Confidence']=='High'])
+        col3.metric("High Confidence", f"{high_conf} Topics")
+        
+    today_eff = t_df['Duration_Mins'].sum() / 60 if not logs_df.empty else 0
+    col4.metric("Total Logged Today", f"{today_eff:.1f} hrs")
+
+    st.markdown("---")
+    
+    # 4. CHARTS
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("Confidence Matrix")
+        if not master_df.empty:
+            fig = px.pie(master_df, names='Confidence', color='Confidence',
+                         color_discrete_map={'High':'#48BB78', 'Med':'#ECC94B', 'Low':'#F56565', 'nan':'#CBD5E0'})
+            st.plotly_chart(fig, use_container_width=True)
+            
+    with c2:
+        st.subheader("Study Trend (Last 7 Days)")
+        if not logs_df.empty:
+            # Group by date
+            daily = logs_df[logs_df['Category'].str.contains('Study')].groupby('Date')['Duration_Mins'].sum().reset_index()
+            fig2 = px.bar(daily.tail(7), x='Date', y='Duration_Mins', title="Study Minutes")
+            st.plotly_chart(fig2, use_container_width=True)
+
+# ==========================
+# TAB 2: TRACKER (STRICT)
 # ==========================
 with tab_track:
-    # Timer State
     if 'start_time' not in st.session_state: st.session_state.start_time = None
 
-    # --- IDLE SCREEN ---
     if st.session_state.start_time is None:
-        st.subheader("🚀 Initiate Session")
-        
+        # --- IDLE ---
         c1, c2 = st.columns([1, 2])
         with c1:
             cat = st.selectbox("Category", ["Study (Core)", "Classes", "Biological", "Logistics", "Wasted"])
-        
         with c2:
             if "Study" in cat or "Class" in cat:
-                if not master_df.empty:
-                    sub_list = master_df['Subject'].unique().tolist()
-                    sel_sub = st.selectbox("Subject", sub_list)
-                    
-                    top_list = master_df[master_df['Subject'] == sel_sub]['Topic'].unique().tolist()
-                    sel_top = st.selectbox("Topic", top_list + ["➕ New Topic"])
-                    
-                    if sel_top == "➕ New Topic":
-                        sel_top = st.text_input("Enter Topic Name")
-                        new_chap = st.text_input("Enter Chapter Name")
-                        is_new = True
-                    else:
-                        is_new = False
+                if master_df.empty:
+                    st.error("Master DB Empty! Go to 'Master Excel' tab to add topics.")
+                    sub, top = "-", "-"
                 else:
-                    st.warning("Master DB Empty. Add topics in 'Database' tab.")
-                    sel_sub, sel_top = "Gen", "Gen"
-                    is_new = False
+                    sub = st.selectbox("Subject", master_df['Subject'].unique())
+                    # Filter Chapters
+                    chaps = master_df[master_df['Subject']==sub]['Chapter'].unique()
+                    chap = st.selectbox("Chapter", chaps)
+                    # Filter Topics
+                    tops = master_df[(master_df['Subject']==sub) & (master_df['Chapter']==chap)]['Topic'].unique()
+                    top = st.selectbox("Topic", list(tops) + ["➕ ADD NEW TOPIC"])
+                    
+                    if top == "➕ ADD NEW TOPIC":
+                        top = st.text_input("Enter New Topic Name")
+                        st.session_state.is_new = True
+                    else:
+                        st.session_state.is_new = False
             else:
-                sel_sub = "-"
-                sel_top = st.text_input("Activity Details", placeholder="e.g. Lunch, Commute")
-                is_new = False
+                sub = "-"
+                top = st.text_input("Description", placeholder="e.g. Sleep, Lunch")
+                st.session_state.is_new = False
 
-        if st.button("▶ START", type="primary", use_container_width=True):
-            now = datetime.now()
-            
-            # 1. Check Gaps Logic
-            updated_logs, gap = perform_gap_check(logs_df, now)
-            
+        if st.button("▶ INITIATE", type="primary", use_container_width=True):
+            # GAP CHECK
+            logs_df, gap = check_strict_gaps(logs_df)
             if gap > 0:
-                # Save the gap immediately to Excel
-                save_db(master_df, updated_logs)
-                st.toast(f"⚠️ Strict Mode: {int(gap)} mins marked as WASTED", icon="🚨")
+                save_db(master_df, logs_df)
+                st.toast(f"⚠️ Strict Mode: {int(gap)} mins marked WASTED", icon="🚨")
             
-            # 2. Start Timer
-            st.session_state.start_time = now
+            st.session_state.start_time = datetime.now()
             st.session_state.cat = cat
-            st.session_state.sub = sel_sub
-            st.session_state.top = sel_top
-            st.session_state.is_new = is_new
-            if is_new: st.session_state.new_chap = new_chap
+            st.session_state.sub = sub
+            st.session_state.top = top
+            st.session_state.chap = locals().get('chap', '-')
             st.rerun()
 
-    # --- RUNNING SCREEN ---
     else:
+        # --- RUNNING ---
         elapsed = datetime.now() - st.session_state.start_time
-        secs = int(elapsed.total_seconds())
+        st.markdown(f"<div class='timer-display'>{str(timedelta(seconds=elapsed.seconds))}</div>", unsafe_allow_html=True)
+        st.write(f"**Current:** {st.session_state.top}")
         
-        st.markdown(f"""
-        <div class="timer-box">
-            <h1 style="font-size: 80px; margin:0; color: #28A745;">{str(timedelta(seconds=secs))}</h1>
-            <h3 style="color: #555;">{st.session_state.top}</h3>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        if st.button("⏹ STOP & SAVE", type="primary", use_container_width=True):
+        if st.button("⏹ STOP & REPORT", type="primary", use_container_width=True):
             st.session_state.end_time = datetime.now()
-            st.session_state.show_save = True
+            st.session_state.show_log = True
             st.rerun()
 
-    # --- SAVE MODAL ---
-    if st.session_state.get("show_save"):
+    # SAVE FORM
+    if st.session_state.get("show_log"):
         st.markdown("---")
-        with st.form("save_form"):
-            st.subheader("📝 Log Details")
+        with st.form("log_form"):
+            st.subheader("📝 Mission Debrief")
             
-            if "Study" in st.session_state.cat:
-                c1, c2 = st.columns(2)
+            if "Study" in st.session_state.cat or "Class" in st.session_state.cat:
+                c1, c2, c3 = st.columns(3)
                 focus = c1.slider("Focus", 1, 5, 4)
-                status = c2.selectbox("Status", ["Pending", "Class Done", "Rev 1", "Rev 2", "Rev 3", "Mastered"])
-                conf = st.select_slider("Confidence", ["Low", "Med", "High"])
+                status = c2.selectbox("New Status", ["Class Done", "Rev 1", "Rev 2", "Rev 3", "Mastered"])
+                conf = c3.select_slider("Confidence", ["Low", "Med", "High"])
+                rtp = st.checkbox("RTP Solved?")
+                mtp = st.checkbox("MTP Solved?")
             else:
                 focus = 0
-                status, conf = "N/A", "N/A"
-            
+                status, conf = "-", "-"
+                rtp, mtp = False, False
+                
             note = st.text_input("Notes")
             
-            if st.form_submit_button("💾 SAVE TO EXCEL"):
-                # 1. Update Log Dataframe
+            if st.form_submit_button("💾 WRITE TO EXCEL"):
                 duration = (st.session_state.end_time - st.session_state.start_time).total_seconds() / 60
                 
-                # Reload DB to ensure we have latest gap data
-                m_df, l_df = load_db()
-                
+                # 1. Update Master DB
+                if "Study" in st.session_state.cat:
+                    if st.session_state.is_new:
+                        new_row = {
+                            'Subject': st.session_state.sub, 'Chapter': st.session_state.chap, 'Topic': st.session_state.top,
+                            'Status': status, 'Confidence': conf, 'Est_Hours': 2,
+                            'Rev_Count': 0, 'Last_Studied': datetime.now().strftime("%Y-%m-%d"), 
+                            'RTP_Done': "Yes" if rtp else "No", 'MTP_Done': "Yes" if mtp else "No"
+                        }
+                        master_df = pd.concat([master_df, pd.DataFrame([new_row])], ignore_index=True)
+                    else:
+                        # Find Row
+                        mask = (master_df['Subject'] == st.session_state.sub) & (master_df['Topic'] == st.session_state.top)
+                        if mask.any():
+                            idx = master_df[mask].index[0]
+                            master_df.at[idx, 'Status'] = status
+                            master_df.at[idx, 'Confidence'] = conf
+                            master_df.at[idx, 'Last_Studied'] = datetime.now().strftime("%Y-%m-%d")
+                            if "Rev" in status: master_df.at[idx, 'Rev_Count'] += 1
+                            if rtp: master_df.at[idx, 'RTP_Done'] = "Yes"
+                            if mtp: master_df.at[idx, 'MTP_Done'] = "Yes"
+
+                # 2. Add Log
                 new_log = {
                     'Date': st.session_state.start_time.strftime("%Y-%m-%d"),
                     'Start_Time': st.session_state.start_time,
@@ -265,105 +354,48 @@ with tab_track:
                     'Subject': st.session_state.sub,
                     'Topic': st.session_state.top,
                     'Duration_Mins': round(duration, 2),
-                    'Focus': focus,
-                    'Note': note
+                    'Focus': focus, 'Note': note
                 }
-                l_df = pd.concat([l_df, pd.DataFrame([new_log])], ignore_index=True)
+                logs_df = pd.concat([logs_df, pd.DataFrame([new_log])], ignore_index=True)
                 
-                # 2. Update Master Dataframe (If Study)
-                if "Study" in st.session_state.cat:
-                    if st.session_state.is_new:
-                        # Add New Topic
-                        new_row = {
-                            'Subject': st.session_state.sub, 'Chapter': st.session_state.new_chap,
-                            'Topic': st.session_state.top, 'Status': status, 'Confidence': conf,
-                            'Rev_Count': 0, 'RTP_Done': 'No', 'MTP_Done': 'No'
-                        }
-                        m_df = pd.concat([m_df, pd.DataFrame([new_row])], ignore_index=True)
-                    else:
-                        # Update Existing
-                        mask = (m_df['Subject'] == st.session_state.sub) & (m_df['Topic'] == st.session_state.top)
-                        if mask.any():
-                            idx = m_df[mask].index[0]
-                            m_df.at[idx, 'Status'] = status
-                            m_df.at[idx, 'Confidence'] = conf
-                            if "Rev" in status:
-                                m_df.at[idx, 'Rev_Count'] = m_df.at[idx, 'Rev_Count'] + 1
-                
-                # 3. Save to File
-                if save_db(m_df, l_df):
-                    st.session_state.start_time = None
-                    st.session_state.show_save = False
-                    st.success("Saved to Excel!")
-                    time.sleep(1)
-                    st.rerun()
+                save_db(master_df, logs_df)
+                st.session_state.start_time = None
+                st.session_state.show_log = False
+                st.success("Data Recorded.")
+                time.sleep(1)
+                st.rerun()
 
 # ==========================
-# TAB 2: DASHBOARD
+# TAB 3: MASTER EXCEL
 # ==========================
-with tab_dash:
-    st.subheader("📊 Analytics")
+with tab_db:
+    st.subheader("🗃️ Syllabus Master Sheet")
+    st.info("You can Add Topics, Change Status, or Edit Confidence directly here.")
     
+    if not master_df.empty:
+        edited_master = st.data_editor(master_df, num_rows="dynamic", use_container_width=True, height=500)
+        if st.button("💾 Save Syllabus Changes"):
+            save_db(edited_master, logs_df)
+            st.success("Updated Excel!")
+
+# ==========================
+# TAB 4: 24H AUDIT
+# ==========================
+with tab_audit:
+    st.subheader("🕵️ Daily Timeline Audit")
     if not logs_df.empty:
-        # Ensure Dates
         logs_df['Start_Time'] = pd.to_datetime(logs_df['Start_Time'])
         logs_df['End_Time'] = pd.to_datetime(logs_df['End_Time'])
         
         today = datetime.now().strftime("%Y-%m-%d")
-        today_df = logs_df[logs_df['Date'] == today]
+        day_df = logs_df[logs_df['Date'] == today]
         
-        # 1. Summary
-        studymins = today_df[today_df['Category'].str.contains("Study|Class")]['Duration_Mins'].sum()
-        wastemins = today_df[today_df['Category'] == "WASTED"]['Duration_Mins'].sum()
-        
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Study Today", f"{int(studymins/60)}h {int(studymins%60)}m")
-        c2.metric("Wasted/Gap", f"{int(wastemins/60)}h {int(wastemins%60)}m", delta_color="inverse")
-        
-        if not master_df.empty:
-            done = len(master_df[master_df['Status'] == 'Mastered'])
-            total = len(master_df)
-            c3.metric("Syllabus Mastered", f"{done}/{total}")
-        
-        st.markdown("---")
-        
-        # 2. Timeline Chart (Light Mode)
-        if not today_df.empty:
-            st.write("Today's Timeline")
-            fig = px.timeline(today_df, x_start="Start_Time", x_end="End_Time", y="Category", 
-                              color="Category",
-                              color_discrete_map={"WASTED": "#E53E3E", "Study (Core)": "#38A169", "Biological": "#3182CE"})
+        if not day_df.empty:
+            fig = px.timeline(day_df, x_start="Start_Time", x_end="End_Time", y="Category", 
+                              color="Category", hover_data=["Topic", "Duration_Mins"],
+                              color_discrete_map={"WASTED":"#E53E3E", "Study (Core)":"#38A169", "Classes":"#3182CE"})
             fig.update_yaxes(autorange="reversed")
-            fig.layout.template = "plotly_white" # Light theme
+            fig.layout.template = "plotly_white"
             st.plotly_chart(fig, use_container_width=True)
-        
-        # 3. Confidence Chart
-        if not master_df.empty:
-            st.write("Topic Confidence")
-            fig2 = px.pie(master_df, names='Confidence', 
-                          color='Confidence', 
-                          color_discrete_map={'High':'#48BB78', 'Med':'#ECC94B', 'Low':'#F56565'})
-            st.plotly_chart(fig2, use_container_width=True)
-
-# ==========================
-# TAB 3: DATABASE
-# ==========================
-with tab_db:
-    st.subheader("🗃️ Excel Manager")
-    st.info("Edit cells below -> Click Save. Do NOT open the Excel file manually while using this.")
-    
-    t1, t2 = st.tabs(["Master Syllabus", "Logs History"])
-    
-    with t1:
-        if not master_df.empty:
-            edited_master = st.data_editor(master_df, num_rows="dynamic", use_container_width=True)
-            if st.button("💾 Update Master DB"):
-                save_db(edited_master, logs_df)
-                st.success("Saved!")
-                
-    with t2:
-        if not logs_df.empty:
-            edited_logs = st.data_editor(logs_df, num_rows="dynamic", use_container_width=True)
-            if st.button("💾 Update Logs"):
-                save_db(master_df, edited_logs)
-                st.success("Saved!")
+        else:
+            st.info("No logs for today.")
