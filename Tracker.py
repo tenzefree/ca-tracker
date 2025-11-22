@@ -6,285 +6,390 @@ import json
 import time
 import os
 import io
-import numpy as np
 from datetime import datetime, date, timedelta
 
-# --- APP CONFIG ---
-st.set_page_config(page_title="CA Jarvis", page_icon="🧠", layout="wide")
+# --- MILITARY CONFIGURATION ---
+st.set_page_config(page_title="CA TITAN OS", page_icon="🛡️", layout="wide")
+DATA_FILE = "titan_logs.json" # Stores time history
+MASTER_DB_FILE = "titan_master_db.json" # Stores the Syllabus Excel data in JSON format for speed
+EXAM_DATE = date(2026, 5, 1)
 
-# --- LIGHT MODE STYLING (Apple Style) ---
+# --- CUSTOM CSS (POWER BI DARK THEME) ---
 st.markdown("""
     <style>
-    /* Main Background */
-    .stApp {background-color: #FFFFFF;}
-    
-    /* Cards */
-    .card {
-        background-color: #F8F9FA;
-        padding: 20px;
-        border-radius: 15px;
-        margin-bottom: 15px;
-        border: 1px solid #E0E0E0;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
-    }
-    
-    /* Typography */
-    h1, h2, h3 {color: #111111 !important;}
-    p {color: #444444;}
-    
-    /* Timer Box */
-    .timer-box {
-        text-align: center;
-        padding: 30px;
-        background: #F0F2F6;
-        border-radius: 20px;
-        border: 1px solid #D1D5DB;
-    }
-    
-    /* Expander Styling */
-    div[data-testid="stExpander"] {
-        background-color: #FFFFFF;
-        border: 1px solid #E0E0E0;
-        border-radius: 10px;
-    }
+    .stApp {background-color: #121212; color: #e0e0e0;}
+    .metric-card {background-color: #1E1E1E; padding: 15px; border-radius: 10px; border-left: 4px solid #00E5FF; text-align: center;}
+    .strict-alert {background-color: #3a0000; color: #ff4444; padding: 10px; border-radius: 5px; font-weight: bold; border: 1px solid red;}
+    div[data-testid="stExpander"] {background-color: #1E1E1E; border: 1px solid #333;}
+    h1, h2, h3 {color: #ffffff !important;}
     </style>
     """, unsafe_allow_html=True)
 
-# --- CONSTANTS ---
-DATA_FILE = "ca_jarvis_data.json"
-EXAM_DATE = date(2026, 5, 1)
-SUBJECTS = ["FR", "AFM", "Audit", "DT", "IDT", "IBS", "SPOM"]
-
-# --- DATA ENGINE ---
-def load_data():
+# --- 1. DATA ENGINE ---
+def load_logs():
     if not os.path.exists(DATA_FILE): return []
     try:
         with open(DATA_FILE, 'r') as f: return json.load(f)
     except: return []
 
-def save_data(data):
+def save_logs(data):
     with open(DATA_FILE, 'w') as f: json.dump(data, f, indent=4)
 
-def add_entry(entry):
-    data = load_data()
-    data.append(entry)
-    save_data(data)
+def load_master_db():
+    if not os.path.exists(MASTER_DB_FILE): return None
+    try:
+        with open(MASTER_DB_FILE, 'r') as f: 
+            data = json.load(f)
+            return pd.DataFrame(data)
+    except: return None
 
-# --- 🧠 AI ENGINE ---
-def ai_brain(df):
-    insights = []
-    recommendation = {"task": "FR", "reason": "Start your journey!"}
+def save_master_db(df):
+    # Convert Date columns to string before saving to JSON
+    date_cols = ['Rev_1_Date', 'Rev_2_Date', 'Rev_3_Date', 'Rev_4_Date', 'Rev_5_Date']
+    for col in date_cols:
+        if col in df.columns:
+            df[col] = df[col].astype(str)
     
-    if df.empty:
-        return recommendation, ["Start logging to activate AI insights."]
+    with open(MASTER_DB_FILE, 'w') as f: 
+        json.dump(df.to_dict(orient='records'), f, indent=4)
 
-    # 1. GAP ANALYSIS
-    last_studied = df[df['Category'] == 'Study'].groupby('Activity')['Date'].max()
-    today_dt = datetime.now()
-    max_gap = -1
+# --- 2. GAP FILLER ALGORITHM (STRICT MODE) ---
+def check_and_fill_gaps(new_start_time):
+    logs = load_logs()
+    if not logs: return # First entry ever
     
-    for subj in SUBJECTS:
-        found = False
-        for act in last_studied.index:
-            if subj in act:
-                found = True
-                last_date = datetime.strptime(last_studied[act], "%Y-%m-%d")
-                gap = (today_dt - last_date).days
-                if gap > max_gap:
-                    max_gap = gap
-                    recommendation = {"task": subj, "reason": f"Neglected for {gap} days."}
-                break
-        if not found:
-            recommendation = {"task": subj, "reason": "Subject untouched!"}
-            break
-
-    # 2. BIO-RHYTHM
-    df['Hour'] = pd.to_datetime(df['Start']).dt.hour
-    morning_focus = df[(df['Hour'] < 12) & (df['Category'] == 'Study')]['Rating'].mean()
-    night_focus = df[(df['Hour'] >= 18) & (df['Category'] == 'Study')]['Rating'].mean()
+    # Get last entry
+    df_logs = pd.DataFrame(logs)
+    df_logs['End'] = pd.to_datetime(df_logs['End'])
+    df_logs['Start'] = pd.to_datetime(df_logs['Start'])
     
-    if pd.notna(morning_focus) and pd.notna(night_focus):
-        if morning_focus > night_focus + 0.5:
-            insights.append("☀️ **Morning Peak:** You focus 25% better before noon.")
-        elif night_focus > morning_focus + 0.5:
-            insights.append("🌙 **Night Owl:** Your focus peaks after 6 PM.")
+    # Filter for TODAY only (don't fill gap from yesterday night)
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_logs = df_logs[df_logs['Date'] == today_str].sort_values('End')
+    
+    if today_logs.empty: return
 
-    return recommendation, insights
+    last_end = today_logs.iloc[-1]['End']
+    current_start = datetime.fromtimestamp(new_start_time)
+    
+    # Gap calculation (in minutes)
+    gap_minutes = (current_start - last_end).total_seconds() / 60
+    
+    # If gap > 10 mins, mark as WASTED
+    if gap_minutes > 10:
+        gap_entry = {
+            "Date": today_str,
+            "Start": last_end.strftime("%Y-%m-%d %H:%M:%S"),
+            "End": current_start.strftime("%Y-%m-%d %H:%M:%S"),
+            "Subject": "SYSTEM",
+            "Topic": "UNACCOUNTED GAP",
+            "Type": "WASTED",
+            "Duration": round(gap_minutes, 2),
+            "Focus": 0,
+            "Confidence": "Low"
+        }
+        logs.append(gap_entry)
+        save_logs(logs)
+        return round(gap_minutes, 0)
+    return 0
 
-# --- SIDEBAR ---
+# --- 3. EXCEL TEMPLATE GENERATOR ---
+def generate_master_template():
+    columns = [
+        'Subject', 'Chapter', 'Topic', 'Est_Hours', 'Current_Status', # Status: Pending, Class Done, Revision
+        'Confidence', # High, Med, Low
+        'Rev_Count', 'Rev_1_Date', 'Rev_2_Date', 'Rev_3_Date', 'Rev_4_Date', 'Rev_5_Date',
+        'RTP_Status', 'MTP_Status' # Pending, Done
+    ]
+    # Dummy Data
+    data = [
+        ['FR', 'Financial Instruments', 'Equity vs Liability', 2.5, 'Pending', 'Low', 0, '', '', '', '', '', 'Pending', 'Pending'],
+        ['Audit', 'Ethics', 'Clauses 1-10', 4.0, 'Class Done', 'Med', 0, '', '', '', '', '', 'Done', 'Pending']
+    ]
+    return pd.DataFrame(data, columns=columns)
+
+# --- SIDEBAR (CONTROLLER) ---
 with st.sidebar:
-    st.title("CA Jarvis 🧠")
-    st.caption("Light Edition")
+    st.title("🛡️ TITAN OS")
+    days_left = (EXAM_DATE - date.today()).days
     
-    page = st.radio("Menu", ["🏠 Home", "📅 Timeline", "🧠 Insights", "⚙️ Data"])
+    # Military Status
+    if days_left < 300: color = "red"
+    else: color = "orange"
+    st.markdown(f"<h2 style='color:{color}; text-align:center;'>{days_left} DAYS</h2>", unsafe_allow_html=True)
+    st.caption("TARGET: MAY 2026")
     
     st.markdown("---")
-    days_left = (EXAM_DATE - date.today()).days
-    st.success(f"📅 **{days_left} Days** Left")
-
-# =========================================
-# PAGE 1: HOME (COMMAND CENTER)
-# =========================================
-if page == "🏠 Home":
     
-    data = load_data()
-    df = pd.DataFrame(data)
-    rec, insights = ai_brain(df)
-
-    # 1. AI RECOMMENDATION CARD
-    st.markdown(f"""
-    <div class="card" style="border-left: 5px solid #007BFF;">
-        <h3 style="margin:0; color:#333;">🤖 AI Suggestion</h3>
-        <p style="font-size: 18px; color: #111;">Next Best Action: <b>{rec['task']}</b></p>
-        <p style="color: #666; font-size: 14px;">Reason: {rec['reason']}</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # 2. LIVE TRACKER
-    st.subheader("🔴 Live Tracker")
+    # MASTER DB LOADER
+    master_df = load_master_db()
     
+    if master_df is None:
+        st.error("⚠️ NO DATABASE LOADED")
+        st.info("Go to 'Data Hangar' tab to upload your Master Excel.")
+        active_subjects = []
+    else:
+        active_subjects = master_df['Subject'].unique().tolist()
+
+    # --- TIMER INTERFACE ---
     if 'start_time' not in st.session_state: st.session_state.start_time = None
 
     if st.session_state.start_time is None:
-        c1, c2, c3 = st.columns([2, 2, 1])
-        with c1: cat = st.selectbox("Category", ["Study", "Biological", "Logistics", "Leisure", "Wasted"])
-        with c2: 
-            acts = []
-            if cat == "Study": acts = SUBJECTS + ["Mock Exam", "Review"]
-            elif cat == "Biological": acts = ["Sleep", "Meals", "Hygiene", "Nap"]
-            elif cat == "Logistics": acts = ["Commute", "Planning", "Chores"]
-            elif cat == "Leisure": acts = ["Social", "TV", "Gaming"]
-            else: acts = ["Procrastination", "Nothing"]
-            act = st.selectbox("Activity", acts)
-        with c3: 
-            st.write("")
-            st.write("")
-            if st.button("▶ START", type="primary", use_container_width=True):
-                st.session_state.start_time = time.time()
-                st.session_state.curr_cat = cat
-                st.session_state.curr_act = act
-                st.rerun()
+        st.subheader("🚀 Initiate Sequence")
+        
+        # 1. Category Selection
+        mode = st.selectbox("Operation Mode", ["Self Study", "Class/Coaching", "Biological (Sleep/Eat)", "Logistics", "Wasted"])
+        
+        if mode in ["Self Study", "Class/Coaching"]:
+            if master_df is not None:
+                subj = st.selectbox("Subject", active_subjects)
+                # Filter Chapters based on Subject
+                chapters = master_df[master_df['Subject'] == subj]['Chapter'].unique().tolist()
+                chap = st.selectbox("Chapter", chapters)
+                # Filter Topics based on Chapter
+                topics = master_df[(master_df['Subject'] == subj) & (master_df['Chapter'] == chap)]['Topic'].unique().tolist()
+                topic = st.selectbox("Topic", topics + ["➕ Add Ad-hoc Topic"])
+                
+                if topic == "➕ Add Ad-hoc Topic":
+                    topic = st.text_input("Enter New Topic Name")
+            else:
+                st.warning("Upload Excel to select Topics")
+                subj, chap, topic = "Ad-hoc", "Ad-hoc", "Manual Entry"
+        else:
+            subj, chap = mode, "General"
+            topic = st.text_input("Activity Details", placeholder="e.g., Lunch, Sleep, Commute")
+
+        if st.button("▶ EXECUTE", type="primary", use_container_width=True):
+            # Check for Gaps before starting
+            gap = check_and_fill_gaps(time.time())
+            if gap > 0:
+                st.toast(f"⚠️ Strict Mode: {gap} mins marked as WASTED!", icon="💀")
+            
+            st.session_state.start_time = time.time()
+            st.session_state.curr_mode = mode
+            st.session_state.curr_subj = subj
+            st.session_state.curr_chap = chap
+            st.session_state.curr_topic = topic
+            st.rerun()
+            
     else:
-        # RUNNING TIMER (LIGHT THEME)
+        # RUNNING STATE
         elapsed = time.time() - st.session_state.start_time
         st.markdown(f"""
-        <div class="timer-box">
-            <h1 style="font-size:80px; color:#DC3545; margin:0; font-weight:bold;">{time.strftime('%H:%M:%S', time.gmtime(elapsed))}</h1>
-            <h3 style="color:#555;">{st.session_state.curr_act}</h3>
+        <div class="metric-card" style="border-color: #00FF00;">
+            <h1 style="color:#00FF00 !important; font-size: 40px; margin:0;">{time.strftime('%H:%M:%S', time.gmtime(elapsed))}</h1>
+            <p>{st.session_state.curr_topic}</p>
         </div>
         """, unsafe_allow_html=True)
         
-        if st.button("⏹ STOP SESSION", use_container_width=True):
+        if st.button("⏹ TERMINATE & LOG", type="primary", use_container_width=True):
             st.session_state.duration = time.time() - st.session_state.start_time
             st.session_state.start_time = None
             st.session_state.show_save = True
             st.rerun()
 
-    # SAVE MODAL
+    # SAVE DIALOG
     if st.session_state.get("show_save"):
-        with st.expander("📝 Save Log", expanded=True):
-            note = st.text_input("Topic / Note")
-            rating = st.slider("Efficiency Rating", 1, 5, 4)
-            
-            if st.button("Confirm Entry"):
-                entry = {
-                    "Start": (datetime.now() - timedelta(seconds=st.session_state.duration)).strftime("%Y-%m-%d %H:%M:%S"),
-                    "End": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "Date": datetime.now().strftime("%Y-%m-%d"),
-                    "Category": st.session_state.curr_cat,
-                    "Activity": st.session_state.curr_act,
-                    "Note": note,
-                    "Duration_Min": round(st.session_state.duration / 60, 2),
-                    "Rating": rating
-                }
-                add_entry(entry)
-                st.session_state.show_save = False
-                st.toast("Saved Successfully!", icon="✅")
-                time.sleep(1)
-                st.rerun()
-
-# =========================================
-# PAGE 2: TIMELINE
-# =========================================
-if page == "📅 Timeline":
-    st.title("📅 Day View")
-    data = load_data()
-    if data:
-        df = pd.DataFrame(data)
-        df['Start'] = pd.to_datetime(df['Start'])
-        df['End'] = pd.to_datetime(df['End'])
+        st.markdown("---")
+        st.markdown("### 📝 Mission Report")
         
-        today = datetime.now().strftime("%Y-%m-%d")
-        day_df = df[df['Date'] == today]
+        # Logic: If Study, show Academic Fields. Else simple.
+        is_academic = st.session_state.curr_mode in ["Self Study", "Class/Coaching"]
         
-        if not day_df.empty:
-            # Light Mode Chart Colors
-            colors = {"Study": "#28A745", "Wasted": "#DC3545", "Biological": "#007BFF", "Leisure": "#FFC107"}
+        if is_academic:
+            c1, c2 = st.columns(2)
+            focus = c1.slider("Focus (1-5)", 1, 5, 4)
+            conf = c2.select_slider("Confidence", options=["Low", "Med", "High"], value="Med")
             
-            fig = px.timeline(day_df, x_start="Start", x_end="End", y="Category", 
-                              color="Category", hover_data=["Activity", "Note"], height=400,
-                              color_discrete_map=colors)
-            fig.update_yaxes(autorange="reversed")
-            fig.layout.template = "plotly_white" # CLEAN WHITE BACKGROUND
-            st.plotly_chart(fig, use_container_width=True)
-            
-            st.markdown("#### 📝 Activity Log")
-            st.dataframe(day_df[['Start', 'Activity', 'Duration_Min', 'Note']], use_container_width=True)
+            # Update Master DB options
+            st.caption("Update Master DB Status:")
+            status_update = st.selectbox("Mark Topic As:", ["No Change", "Class Done", "Revision 1 Done", "Revision 2 Done", "Revision 3 Done", "Exam Ready"])
+            rtp_update = st.checkbox("RTP Solved?")
+            mtp_update = st.checkbox("MTP Solved?")
         else:
-            st.info("No activities logged today.")
+            focus = 0
+            conf = "N/A"
+            status_update = "N/A"
 
-# =========================================
-# PAGE 3: AI CORTEX
-# =========================================
-if page == "🧠 Insights":
-    st.title("🧠 Cortex Analysis")
-    
-    data = load_data()
-    if data:
-        df = pd.DataFrame(data)
-        rec, insights = ai_brain(df)
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("🔍 Patterns")
-            if insights:
-                for i in insights: st.info(i)
-            else:
-                st.write("Keep logging to reveal patterns.")
+        if st.button("💾 SAVE TO DATABASE", use_container_width=True):
+            # 1. Save to Time Logs
+            mins = round(st.session_state.duration / 60, 2)
+            eff_mins = mins * (focus/5) if focus > 0 else 0
+            
+            log_entry = {
+                "Date": datetime.now().strftime("%Y-%m-%d"),
+                "Start": (datetime.now() - timedelta(seconds=st.session_state.duration)).strftime("%Y-%m-%d %H:%M:%S"),
+                "End": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "Subject": st.session_state.curr_subj,
+                "Chapter": st.session_state.curr_chap,
+                "Topic": st.session_state.curr_topic,
+                "Type": st.session_state.curr_mode,
+                "Duration": mins,
+                "Focus": focus,
+                "Effective": round(eff_mins, 2),
+                "Confidence": conf
+            }
+            logs = load_logs()
+            logs.append(log_entry)
+            save_logs(logs)
+            
+            # 2. Update Master DB (If Academic)
+            if is_academic and master_df is not None:
+                # Find the row index
+                mask = (master_df['Subject'] == st.session_state.curr_subj) & \
+                       (master_df['Chapter'] == st.session_state.curr_chap) & \
+                       (master_df['Topic'] == st.session_state.curr_topic)
                 
-        with col2:
-            st.subheader("🤖 Mentor Prompt")
-            st.write("Generate a prompt for ChatGPT to act as your CA Coach.")
-            if st.button("Generate Prompt"):
-                total_hrs = df['Duration_Min'].sum() / 60
-                prompt = f"I am a CA Final student (May 2026). I have studied {total_hrs:.1f} hours total. My data shows I am currently focusing on {rec['task']}. Please give me a schedule."
-                st.code(prompt)
+                if mask.any():
+                    idx = master_df.index[mask][0]
+                    master_df.at[idx, 'Confidence'] = conf
+                    
+                    if status_update == "Class Done": master_df.at[idx, 'Current_Status'] = "Class Done"
+                    elif "Revision" in status_update:
+                        rev_num = status_update.split(" ")[1] # Get 1, 2 etc
+                        master_df.at[idx, 'Rev_Count'] = int(rev_num)
+                        master_df.at[idx, f'Rev_{rev_num}_Date'] = datetime.now().strftime("%Y-%m-%d")
+                    
+                    if rtp_update: master_df.at[idx, 'RTP_Status'] = "Done"
+                    if mtp_update: master_df.at[idx, 'MTP_Status'] = "Done"
+                    
+                    save_master_db(master_df)
+                    st.toast("Master DB Updated!", icon="💾")
+            
+            st.session_state.show_save = False
+            st.rerun()
 
-# =========================================
-# PAGE 4: DATA VAULT
-# =========================================
-if page == "⚙️ Data":
-    st.title("⚙️ Data Management")
+# --- DASHBOARD TABS ---
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Command Center", "📅 24H Timeline", "📂 Syllabus Matrix", "⚙️ Data Hangar"])
+
+# ==========================
+# TAB 1: COMMAND CENTER
+# ==========================
+with tab1:
+    logs = load_logs()
+    df_logs = pd.DataFrame(logs)
     
-    data = load_data()
-    if data:
-        df = pd.DataFrame(data)
+    if not df_logs.empty:
+        today = datetime.now().strftime("%Y-%m-%d")
+        today_df = df_logs[df_logs['Date'] == today]
         
-        # EXCEL EXPORT
+        # 1. MILITARY DRILL SERGEANT
+        total_study = today_df[today_df['Type'].isin(["Self Study", "Class/Coaching"])]['Duration'].sum()
+        total_waste = today_df[today_df['Type'].isin(["Wasted", "UNACCOUNTED"])]['Duration'].sum()
+        
+        if total_waste > total_study:
+            st.markdown(f"<div class='strict-alert'>🚨 ALERT: You have wasted {int(total_waste)} mins today! Get back to work!</div>", unsafe_allow_html=True)
+        
+        # 2. KPI ROW
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total Study Today", f"{int(total_study/60)}h {int(total_study%60)}m")
+        
+        avg_focus = today_df[today_df['Focus'] > 0]['Focus'].mean()
+        c2.metric("Focus Efficiency", f"{avg_focus:.1f}/5" if pd.notna(avg_focus) else "-")
+        
+        if master_df is not None:
+            total_topics = len(master_df)
+            done_topics = len(master_df[master_df['Current_Status'] != 'Pending'])
+            c3.metric("Syllabus Velocity", f"{done_topics}/{total_topics} Topics")
+        
+        # 3. CONFIDENCE RAG MATRIX
+        st.subheader("Confidence Matrix")
+        if master_df is not None:
+            rag_counts = master_df['Confidence'].value_counts().reset_index()
+            fig_rag = px.pie(rag_counts, names='Confidence', values='count', 
+                             color='Confidence', 
+                             color_discrete_map={"High":"#00FF00", "Med":"#FFFF00", "Low":"#FF0000"})
+            st.plotly_chart(fig_rag, use_container_width=True)
+
+# ==========================
+# TAB 2: 24H TIMELINE
+# ==========================
+with tab2:
+    st.subheader("🕵️ 24-Hour Audit")
+    if not df_logs.empty:
+        # Ensure datetime format
+        df_logs['Start'] = pd.to_datetime(df_logs['Start'])
+        df_logs['End'] = pd.to_datetime(df_logs['End'])
+        
+        # Filter for Today
+        today_viz = df_logs[df_logs['Date'] == datetime.now().strftime("%Y-%m-%d")]
+        
+        if not today_viz.empty:
+            fig_timeline = px.timeline(today_viz, x_start="Start", x_end="End", y="Type", color="Type",
+                                       color_discrete_map={"Self Study":"#00FF00", "WASTED":"#FF0000", "Class/Coaching":"#00CCFF"},
+                                       hover_data=["Topic", "Duration"])
+            fig_timeline.update_yaxes(autorange="reversed")
+            fig_timeline.layout.template = "plotly_dark"
+            st.plotly_chart(fig_timeline, use_container_width=True)
+            
+            st.dataframe(today_viz[['Start', 'Type', 'Subject', 'Topic', 'Duration', 'Focus']].sort_values('Start', ascending=False), use_container_width=True)
+        else:
+            st.info("No logs for today.")
+
+# ==========================
+# TAB 3: SYLLABUS MATRIX
+# ==========================
+with tab3:
+    st.subheader("📂 Master Database View")
+    if master_df is not None:
+        # Filter
+        subj_filter = st.multiselect("Filter Subject", master_df['Subject'].unique())
+        status_filter = st.multiselect("Filter Status", master_df['Current_Status'].unique())
+        
+        view_df = master_df.copy()
+        if subj_filter: view_df = view_df[view_df['Subject'].isin(subj_filter)]
+        if status_filter: view_df = view_df[view_df['Current_Status'].isin(status_filter)]
+        
+        st.dataframe(view_df, use_container_width=True, height=500)
+    else:
+        st.warning("Upload Master Excel in 'Data Hangar' to view this.")
+
+# ==========================
+# TAB 4: DATA HANGAR
+# ==========================
+with tab4:
+    st.title("⚙️ Data Hangar")
+    
+    c1, c2 = st.columns(2)
+    
+    # 1. DOWNLOAD TEMPLATE
+    with c1:
+        st.subheader("1. Get Template")
+        st.write("Download this blank structure, fill your Classes/Chapters, then upload.")
+        template_df = generate_master_template()
+        
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df.to_excel(writer, index=False, sheet_name='JarvisData')
+            template_df.to_excel(writer, index=False)
         
-        st.download_button("📥 Download Excel Backup", data=output.getvalue(), 
-                           file_name="CA_Jarvis_Backup.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.download_button("📥 Download Blank Master Excel", data=output.getvalue(), 
+                           file_name="Titan_Master_Template.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    # 2. UPLOAD MASTER
+    with c2:
+        st.subheader("2. Upload Master DB")
+        st.write("⚠️ Uploading here will OVERWRITE the Topic List (Study logs will remain safe).")
+        uploaded_master = st.file_uploader("Drop Filled Excel Here", type=['xlsx'])
+        
+        if uploaded_master:
+            if st.button("⚠️ OVERWRITE MASTER DB"):
+                new_master = pd.read_excel(uploaded_master)
+                save_master_db(new_master)
+                st.success("Master DB Updated! Reloading...")
+                time.sleep(2)
+                st.rerun()
+
+    st.markdown("---")
+    st.subheader("3. Backup & Restore (Full System)")
     
-    st.write("---")
-    uploaded = st.file_uploader("Restore Excel Backup", type=['xlsx'])
-    if uploaded and st.button("Load Data"):
-        new_df = pd.read_excel(uploaded)
-        # Type conversion for JSON
-        for col in ['Start', 'End', 'Date']: new_df[col] = new_df[col].astype(str)
-        save_data(new_df.to_dict(orient='records'))
-        st.success("Data Restored.")
-        time.sleep(1)
-        st.rerun()
+    # EXPORT LOGS
+    logs = load_logs()
+    if logs:
+        log_df = pd.DataFrame(logs)
+        out_logs = io.BytesIO()
+        with pd.ExcelWriter(out_logs, engine='xlsxwriter') as writer:
+            log_df.to_excel(writer, index=False)
+            
+        st.download_button("📥 Download Study Logs (History)", data=out_logs.getvalue(),
+                           file_name=f"Titan_Logs_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
