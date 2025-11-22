@@ -1,21 +1,36 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import json
 import time
 import os
 import io
 from datetime import datetime, date, timedelta
 
-# --- APP CONFIGURATION ---
-st.set_page_config(page_title="CA Final Zen", page_icon="🧘", layout="centered")
-
-# --- CONSTANTS ---
-DATA_FILE = "ca_final_data.json"
+# --- CONFIGURATION ---
+st.set_page_config(page_title="CA LifeOS", page_icon="🧬", layout="wide")
+DATA_FILE = "ca_life_os.json"
 EXAM_DATE = date(2026, 5, 1)
-SUBJECTS = ["FR", "AFM", "Audit", "DT", "IDT", "IBS", "SPOM"]
-TARGET_HOURS = {"FR": 250, "AFM": 200, "Audit": 150, "DT": 200, "IDT": 150, "IBS": 100, "SPOM": 80}
+
+# --- HIERARCHY (TRACK EVERYTHING) ---
+SCHEMA = {
+    "📚 Study (Core)": ["FR Class", "AFM Class", "Audit Class", "DT Class", "IDT Class", "Self Study", "Practice/Mock"],
+    "💤 Biological": ["Sleep", "Nap", "Meals", "Shower/Hygiene"],
+    "🏃‍♂️ Health": ["Gym/Walk", "Meditation", "Doctor"],
+    "🏠 Logistics": ["Commute", "Housework", "Planning/Admin", "Marriage Works"],
+    "🍿 Leisure": ["Social Media", "TV/Movies", "Friends/Outing", "Gaming"],
+    "🗑️ Wasted Time": ["Procrastination", "Nothing/Idle"]
+}
+
+# --- COLORS FOR TIMELINE ---
+COLORS = {
+    "📚 Study (Core)": "#00CC96",  # Green
+    "💤 Biological": "#636EFA",    # Blue
+    "🏃‍♂️ Health": "#AB63FA",       # Purple
+    "🏠 Logistics": "#FFA15A",     # Orange
+    "🍿 Leisure": "#FF6692",       # Pink
+    "🗑️ Wasted Time": "#EF553B"    # Red
+}
 
 # --- DATA ENGINE ---
 def load_data():
@@ -32,229 +47,222 @@ def add_entry(entry):
     data.append(entry)
     save_data(data)
 
-def get_streak(df):
-    if df.empty: return 0
-    dates = pd.to_datetime(df['Date']).dt.date.unique()
-    dates.sort()
-    streak = 0
-    today = date.today()
+# --- SIDEBAR (THE CONTROLLER) ---
+with st.sidebar:
+    st.title("🧬 CA LifeOS")
+    days = (EXAM_DATE - date.today()).days
+    st.caption(f"Target: May 2026 ({days} days left)")
     
-    # Check if we studied today or yesterday to keep streak alive
-    if today in dates:
-        streak = 1
-        check_date = today - timedelta(days=1)
-    elif (today - timedelta(days=1)) in dates:
-        streak = 0 # Will start counting loop below
-        check_date = today - timedelta(days=1)
-    else:
-        return 0
-        
-    # Count backwards
-    for i in range(len(dates)):
-        if check_date in dates:
-            streak += 1
-            check_date -= timedelta(days=1)
-        else:
-            break
-    return streak
-
-# --- STYLING ---
-st.markdown("""
-    <style>
-    .stApp {background-color: #f9f9f9;}
-    .big-font {font-size:20px !important;}
-    div[data-testid="stMetricValue"] {font-size: 24px;}
-    </style>
-    """, unsafe_allow_html=True)
-
-# --- MAIN LOGIC ---
-if 'start_time' not in st.session_state: st.session_state.start_time = None
-
-# --- TABS ---
-tab_focus, tab_insights, tab_data = st.tabs(["🧘 Focus", "📊 Insights", "⚙️ Vault"])
-
-# =========================================
-# TAB 1: FOCUS (The Simple Timer)
-# =========================================
-with tab_focus:
-    # 1. HEADER: DAYS LEFT
-    days_left = (EXAM_DATE - date.today()).days
-    st.progress((1000 - days_left)/1000, text=f"⏳ {days_left} Days to May '26")
-
-    # 2. TIMER LOGIC
+    st.markdown("---")
+    
+    # 🔴 LIVE TRACKER
+    if 'start_time' not in st.session_state: st.session_state.start_time = None
+    
     if st.session_state.start_time is None:
-        # --- IDLE STATE ---
-        st.markdown("### 🎯 Start a Session")
+        st.subheader("🔴 Start Activity")
+        cat = st.selectbox("Category", list(SCHEMA.keys()))
+        act = st.selectbox("Activity", SCHEMA[cat])
+        note = st.text_input("Note", placeholder="Details...")
         
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            task_input = st.selectbox("Subject", SUBJECTS)
-        with col2:
-            mode = st.selectbox("Type", ["Study", "Class", "Practice", "Review"])
-            
-        topic = st.text_input("Topic (Optional)", placeholder="What are you learning?")
-        st.session_state.temp_topic = topic
-        
-        st.write("")
-        if st.button("⭕ START FOCUS", type="primary", use_container_width=True):
+        if st.button("▶ START", type="primary", use_container_width=True):
             st.session_state.start_time = time.time()
-            st.session_state.current_task = task_input
-            st.session_state.current_mode = mode
+            st.session_state.curr_cat = cat
+            st.session_state.curr_act = act
+            st.session_state.curr_note = note
             st.rerun()
             
-        # Quick Daily Stats below button
-        data = load_data()
-        if data:
-            df = pd.DataFrame(data)
-            today_str = datetime.now().strftime("%Y-%m-%d")
-            today_mins = df[df['Date'] == today_str]['Duration'].sum()
-            
-            st.markdown("---")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Today", f"{int(today_mins)}m")
-            c2.metric("Streak", f"🔥 {get_streak(df)} days")
-            c3.metric("Entries", len(df))
-
     else:
-        # --- RUNNING STATE (Minimalist) ---
         elapsed = time.time() - st.session_state.start_time
-        
         st.markdown(f"""
-        <div style='text-align: center; padding: 40px; background: white; border-radius: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>
-            <h2 style='color: #555;'>{st.session_state.current_mode}: {st.session_state.current_task}</h2>
-            <h1 style='font-size: 80px; color: #FF4B4B; margin: 10px 0;'>
-                {time.strftime('%H:%M:%S', time.gmtime(elapsed))}
-            </h1>
-            <p style='color: #888;'>Stay focused. Put the phone away.</p>
+        <div style='background:#1E1E1E; padding:15px; border-radius:10px; text-align:center;'>
+            <h2 style='color:white; margin:0;'>{time.strftime('%H:%M:%S', time.gmtime(elapsed))}</h2>
+            <p style='color:#AAA; margin:0;'>{st.session_state.curr_act}</p>
         </div>
-        <br>
         """, unsafe_allow_html=True)
-
-        if st.button("⏹️ STOP SESSION", type="secondary", use_container_width=True):
+        
+        if st.button("⏹ STOP & LOG", type="primary", use_container_width=True):
             st.session_state.duration = time.time() - st.session_state.start_time
             st.session_state.start_time = None
             st.session_state.show_save = True
             st.rerun()
-        
-        time.sleep(1)
-        st.rerun()
 
-    # --- SAVE DIALOG ---
+    # SAVE POPUP
     if st.session_state.get("show_save"):
-        with st.expander("💾 Save Session", expanded=True):
-            focus = st.slider("How focused were you?", 1, 5, 4)
-            mins = st.session_state.duration / 60
+        st.markdown("---")
+        st.write("📝 **Review Entry**")
+        
+        # Logic: If study, ask Focus. If Leisure, ask Guilt?
+        rating = 0
+        if "Study" in st.session_state.curr_cat:
+            rating = st.slider("Focus Level", 1, 5, 4)
+        elif "Leisure" in st.session_state.curr_cat or "Waste" in st.session_state.curr_cat:
+            rating = st.slider("Enjoyment/Regret Level", 1, 5, 3)
             
-            if st.button("Confirm & Save"):
-                entry = {
-                    "Date": datetime.now().strftime("%Y-%m-%d"),
-                    "Task": st.session_state.current_task, # Subject
-                    "Mode": st.session_state.current_mode, # Type
-                    "Topic": st.session_state.temp_topic,
-                    "Duration": round(mins, 2),
-                    "Focus": focus,
-                    "Effective": round(mins * (focus/5), 2)
-                }
-                add_entry(entry)
-                st.session_state.show_save = False
-                st.toast("Saved! Great work!", icon="🚀")
-                time.sleep(1)
-                st.rerun()
+        if st.button("💾 Confirm"):
+            start_dt = datetime.now() - timedelta(seconds=st.session_state.duration)
+            entry = {
+                "Start": start_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                "End": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "Date": datetime.now().strftime("%Y-%m-%d"),
+                "Category": st.session_state.curr_cat,
+                "Activity": st.session_state.curr_act,
+                "Note": st.session_state.curr_note,
+                "Duration_Min": round(st.session_state.duration / 60, 2),
+                "Rating": rating
+            }
+            add_entry(entry)
+            st.session_state.show_save = False
+            st.toast("Logged to LifeOS", icon="🧬")
+            time.sleep(1)
+            st.rerun()
+
+# --- MAIN DASHBOARD ---
+tab_day, tab_study, tab_life, tab_data = st.tabs(["📅 Day Tracker", "📚 Study HQ", "🧬 Life Stats", "⚙️ Data"])
 
 # =========================================
-# TAB 2: INSIGHTS (Visuals)
+# TAB 1: THE DAY TRACKER (TIMELINE)
 # =========================================
-with tab_insights:
-    data = load_data()
-    if not data:
-        st.info("Start tracking to see insights.")
-    else:
-        df = pd.DataFrame(data)
-        
-        # 1. HEATMAP (Consistency)
-        st.subheader("📅 Consistency Heatmap")
-        daily_counts = df.groupby('Date')['Duration'].sum().reset_index()
-        fig_heat = px.bar(daily_counts, x='Date', y='Duration', color='Duration', 
-                          color_continuous_scale='Greens', height=250)
-        fig_heat.update_layout(xaxis_title=None, yaxis_title="Mins")
-        st.plotly_chart(fig_heat, use_container_width=True)
-        
-        # 2. NEGLECTED SUBJECTS
-        st.subheader("⚠️ Attention Needed")
-        last_studied = df.groupby('Task')['Date'].max()
-        today = datetime.now().strftime("%Y-%m-%d")
-        today_dt = datetime.strptime(today, "%Y-%m-%d")
-        
-        alerts = []
-        for subj in SUBJECTS:
-            if subj not in last_studied:
-                alerts.append(f"⚪ Never studied **{subj}**")
-            else:
-                last_date = datetime.strptime(last_studied[subj], "%Y-%m-%d")
-                days_gap = (today_dt - last_date).days
-                if days_gap > 3:
-                    alerts.append(f"⚠️ **{subj}**: {days_gap} days ago")
-        
-        if alerts:
-            for a in alerts[:3]: st.write(a)
-        else:
-            st.success("You are balancing all subjects well!")
-
-        # 3. PROGRESS RINGS
-        st.subheader("🎯 Subject Mastery")
-        cols = st.columns(3)
-        for i, subj in enumerate(SUBJECTS[:3]): # Show top 3, extend logic if needed
-            done = df[df['Task'] == subj]['Duration'].sum() / 60
-            target = TARGET_HOURS[subj]
-            pct = min(done/target, 1)
-            
-            with cols[i]:
-                st.markdown(f"**{subj}**")
-                st.progress(pct)
-                st.caption(f"{int(done)}/{target}h")
-
-# =========================================
-# TAB 3: VAULT (Excel Import/Export)
-# =========================================
-with tab_data:
-    st.subheader("⚙️ Data Vault")
+with tab_day:
+    st.subheader("Today's Timeline (24h)")
     
     data = load_data()
     if data:
         df = pd.DataFrame(data)
+        df['Start'] = pd.to_datetime(df['Start'])
+        df['End'] = pd.to_datetime(df['End'])
         
-        # EXCEL EXPORT
+        # Filter for TODAY
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_df = df[df['Date'] == today_str].copy()
+        
+        if not today_df.empty:
+            # 1. GANTT CHART
+            fig = px.timeline(today_df, x_start="Start", x_end="End", y="Category", 
+                              color="Category", hover_data=["Activity", "Note", "Duration_Min"],
+                              color_discrete_map=COLORS, height=350)
+            fig.update_yaxes(autorange="reversed") # Top to bottom
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # 2. STATS ROW
+            total_min = today_df['Duration_Min'].sum()
+            study_min = today_df[today_df['Category'].str.contains("Study")]['Duration_Min'].sum()
+            waste_min = today_df[today_df['Category'].str.contains("Waste|Leisure")]['Duration_Min'].sum()
+            
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Tracked Time", f"{int(total_min/60)}h {int(total_min%60)}m")
+            k2.metric("Study Output", f"{int(study_min/60)}h {int(study_min%60)}m")
+            k3.metric("Non-Productive", f"{int(waste_min/60)}h {int(waste_min%60)}m", delta_color="inverse")
+            
+            # Productivity Pulse
+            if (total_min - waste_min) > 0:
+                prod_score = int((study_min / total_min) * 100)
+                k4.metric("Day Score", f"{prod_score}%")
+            
+            # 3. DETAILED LIST
+            st.markdown("#### 📝 Activity Log")
+            st.dataframe(today_df[['Start', 'Category', 'Activity', 'Duration_Min', 'Note']].sort_values('Start', ascending=False), use_container_width=True)
+        else:
+            st.info("No activities logged today yet. Start the tracker in the sidebar!")
+    else:
+        st.info("Database empty.")
+
+# =========================================
+# TAB 2: STUDY HQ (ACADEMIC)
+# =========================================
+with tab_study:
+    if data:
+        df = pd.DataFrame(data)
+        study_df = df[df['Category'].str.contains("Study")]
+        
+        if not study_df.empty:
+            c1, c2 = st.columns([2, 1])
+            
+            with c1:
+                st.subheader("Subject Breakdown")
+                fig_sun = px.sunburst(study_df, path=['Category', 'Activity'], values='Duration_Min', color='Activity')
+                st.plotly_chart(fig_sun, use_container_width=True)
+                
+            with c2:
+                st.subheader("Focus Trend")
+                # Average focus by activity
+                focus_group = study_df.groupby('Activity')['Rating'].mean().reset_index()
+                fig_bar = px.bar(focus_group, x='Rating', y='Activity', orientation='h', title="Avg Focus (1-5)")
+                st.plotly_chart(fig_bar, use_container_width=True)
+        else:
+            st.warning("No study data found.")
+
+# =========================================
+# TAB 3: LIFE STATS (BIO/LOGISTICS)
+# =========================================
+with tab_life:
+    if data:
+        df = pd.DataFrame(data)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("💤 Sleep Analysis")
+            sleep_df = df[df['Activity'] == "Sleep"]
+            if not sleep_df.empty:
+                avg_sleep = sleep_df['Duration_Min'].mean() / 60
+                st.metric("Avg Sleep / Night", f"{avg_sleep:.1f} hrs")
+                
+                # Sleep Chart
+                fig_sleep = px.bar(sleep_df, x='Date', y='Duration_Min', title="Sleep Duration")
+                st.plotly_chart(fig_sleep, use_container_width=True)
+            else:
+                st.write("No sleep logs.")
+
+        with col2:
+            st.subheader("🏠 Logistics & Overhead")
+            log_df = df[df['Category'].str.contains("Logistics|Health")]
+            if not log_df.empty:
+                fig_pie = px.pie(log_df, names='Activity', values='Duration_Min', title="Where does non-study time go?")
+                st.plotly_chart(fig_pie, use_container_width=True)
+            else:
+                st.write("No logistics logs.")
+
+# =========================================
+# TAB 4: DATA VAULT
+# =========================================
+with tab_data:
+    st.subheader("⚙️ Manage Data")
+    
+    if data:
+        df = pd.DataFrame(data)
+        
+        # 1. EXCEL EXPORT
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df.to_excel(writer, index=False, sheet_name='Logs')
+            df.to_excel(writer, index=False, sheet_name='LifeLog')
         
         st.download_button(
-            "📥 Download Excel Backup",
+            "📥 Download Excel Report",
             data=output.getvalue(),
-            file_name=f"CA_Zen_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
+            file_name=f"LifeOS_Backup_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+        
+        # 2. EXCEL IMPORT
+        st.markdown("---")
+        uploaded = st.file_uploader("Restore from Excel", type=['xlsx'])
+        if uploaded and st.button("Load Data"):
+            try:
+                new_df = pd.read_excel(uploaded)
+                # Format fix
+                new_df['Start'] = new_df['Start'].astype(str)
+                new_df['End'] = new_df['End'].astype(str)
+                new_df['Date'] = new_df['Date'].astype(str)
+                
+                save_data(new_df.to_dict(orient='records'))
+                st.success("Restored!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error: {e}")
 
-    # EXCEL IMPORT
-    st.write("---")
-    uploaded = st.file_uploader("Restore from Excel", type=['xlsx'])
-    if uploaded and st.button("Load Data"):
-        try:
-            new_df = pd.read_excel(uploaded)
-            # Convert timestamps to string dates if needed
-            if 'Date' in new_df.columns: new_df['Date'] = new_df['Date'].astype(str)
-            save_data(new_df.to_dict(orient='records'))
-            st.success("Restored!")
-            time.sleep(1)
-            st.rerun()
-        except:
-            st.error("Invalid Excel file.")
-
-    # DATA EDITOR
-    with st.expander("View/Edit Raw Data"):
-        if data:
+        # 3. EDITOR
+        with st.expander("✏️ Edit / Delete Entries"):
             edited = st.data_editor(df, num_rows="dynamic", use_container_width=True)
-            if st.button("Save Edits"):
+            if st.button("Save Changes"):
                 save_data(edited.to_dict(orient='records'))
                 st.rerun()
